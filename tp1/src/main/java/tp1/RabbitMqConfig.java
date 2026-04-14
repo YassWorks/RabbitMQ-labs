@@ -3,6 +3,7 @@ package tp1;
 import com.rabbitmq.client.ConnectionFactory;
 
 public final class RabbitMqConfig {
+
     private RabbitMqConfig() {
     }
 

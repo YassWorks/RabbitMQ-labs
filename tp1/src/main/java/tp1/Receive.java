@@ -9,6 +9,7 @@ import com.rabbitmq.client.ConnectionFactory;
 import com.rabbitmq.client.DeliverCallback;
 
 public class Receive {
+
     private static final String QUEUE_NAME = "hello";
 
     public static void main(String[] argv) throws Exception {
