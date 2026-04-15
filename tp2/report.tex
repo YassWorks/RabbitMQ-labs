@@ -1,0 +1,490 @@
+\documentclass[a4paper,12pt]{article}
+% --- Paquets nécessaires ---
+\usepackage[french]{babel}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{geometry}
+\geometry{margin=2.5cm}
+\usepackage{graphicx}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{float}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{caption}
+
+% --- Configuration du style de code ---
+\definecolor{codegray}{rgb}{0.95,0.95,0.95}
+\definecolor{commentgreen}{rgb}{0,0.6,0}
+\definecolor{keywordblue}{rgb}{0,0,0.8}
+\lstset{
+    backgroundcolor=\color{codegray},
+    basicstyle=\ttfamily\small,
+    breaklines=true,
+    commentstyle=\color{commentgreen},
+    keywordstyle=\color{keywordblue},
+    frame=single,
+    language=bash,
+    showstringspaces=false,
+    captionpos=b,
+    numbers=left,
+    numberstyle=\tiny\color{gray}
+}
+
+\lstdefinestyle{sql}{
+    language=SQL,
+    backgroundcolor=\color{codegray},
+    basicstyle=\ttfamily\small,
+    breaklines=true,
+    frame=single,
+    numbers=left,
+    numberstyle=\tiny\color{gray},
+    keywordstyle=\color{keywordblue},
+    commentstyle=\color{commentgreen},
+    captionpos=b,
+}
+
+\lstdefinestyle{java}{
+    language=Java,
+    backgroundcolor=\color{codegray},
+    basicstyle=\ttfamily\small,
+    breaklines=true,
+    frame=single,
+    numbers=left,
+    numberstyle=\tiny\color{gray},
+    keywordstyle=\color{keywordblue},
+    commentstyle=\color{commentgreen},
+    captionpos=b,
+}
+
+% Commande pour les lignes de l'en-tête
+\newcommand{\HRule}[1]{\rule{\linewidth}{#1}}
+
+\begin{document}
+
+% --- PAGE DE GARDE ---
+\begin{titlepage}
+    \centering
+    \begin{minipage}{0.2\textwidth}
+        \begin{flushleft}
+            \includegraphics[width=2.5cm]{insat (1).png}
+        \end{flushleft}
+    \end{minipage}
+    \begin{minipage}{0.55\textwidth}
+        \centering
+        {\small \textbf{REPUBLIQUE TUNISIENNE}} \\
+        {\small Ministère de l'Enseignement Supérieur \\ et de la Recherche Scientifique} \\
+        \vspace{0.2cm}
+        {\small \textbf{Université de Carthage \\ INSAT - Institut National des Sciences Appliquées et de Technologie}}
+    \end{minipage}
+    \begin{minipage}{0.2\textwidth}
+        \begin{flushright}
+            \includegraphics[width=2.5cm]{ucar (1).png}
+        \end{flushright}
+    \end{minipage}
+
+    \vspace{0.5cm}
+    \HRule{1.5pt} \\ [0.4cm]
+    \vspace{2cm}
+    {\Huge \textbf{Compte rendu}} \\ [0.5cm]
+    {\huge \textbf{TP n° 2}} \\ [0.4cm]
+    {\Large \textbf{Synchronisation de bases de données distribuées}} \\ [0.2cm]
+    {\large avec RabbitMQ} \\ [0.8cm]
+    \vspace{6cm}
+
+    \begin{minipage}{0.45\textwidth}
+        \begin{flushleft} \large
+            \textbf{Réalisé par :}\\
+            Aymen \textsc{Abid} \\
+            Mohamed Yassine \textsc{Kallel}
+        \end{flushleft}
+    \end{minipage}
+    \hfill
+    \begin{minipage}{0.45\textwidth}
+        \begin{flushright} \large
+            \textbf{Enseignant :}\\
+            M. Sofiane Ouni
+        \end{flushright}
+    \end{minipage}
+    \vfill
+    {\large Année Universitaire 2025 -- 2026}
+\end{titlepage}
+
+\tableofcontents
+\newpage
+
+% ============================================================
+\section{Introduction}
+% ============================================================
+
+Ce travail pratique s'inscrit dans le cadre du module \textbf{Fondements des Systèmes Répartis}. Il porte sur la mise en place d'un mécanisme de \textbf{synchronisation distribuée de bases de données MySQL} à l'aide d'un broker de messages \textbf{RabbitMQ}.
+
+L'objectif principal est de simuler un environnement multi-sites dans lequel plusieurs agences (Branch Offices — BO) collectent des données de ventes de manière indépendante, puis les transmettent de façon asynchrone vers un siège central (Head Office — HO) via des queues de messages dédiées. Ce paradigme d'échange basé sur les messages garantit le découplage entre producteurs et consommateurs, et offre une résilience accrue face aux pannes réseau ou aux indisponibilités temporaires.
+
+\bigskip
+
+Les technologies mises en \oe uvre dans ce TP sont :
+
+\begin{itemize}
+    \item \textbf{Java (Maven)} pour l'implémentation des producers et du consumer
+    \item \textbf{RabbitMQ} (déployé via Docker) comme broker de messages
+    \item \textbf{MySQL} (port 3308) pour les bases de données BO1, BO2 et HO
+    \item \textbf{AMQP} comme protocole de communication entre Java et RabbitMQ
+\end{itemize}
+
+% ============================================================
+\section{Architecture générale}
+% ============================================================
+
+\subsection{Vue d'ensemble}
+
+L'architecture repose sur trois composants principaux :
+
+\begin{enumerate}
+    \item \textbf{Les Branch Offices (BO1, BO2)} : chaque agence dispose de sa propre base MySQL. Le rôle des \textit{producers} Java est de lire les enregistrements non synchronisés (champ \texttt{synced = 0}) et de les publier sous forme de messages JSON dans une queue RabbitMQ dédiée.
+    \item \textbf{RabbitMQ} : broker central hébergeant deux queues durables — \texttt{bo1.sync} et \texttt{bo2.sync}. Les messages sont persistants, garantissant leur survie même en cas de redémarrage du broker.
+    \item \textbf{Le Head Office (HO)} : un \textit{consumer} Java écoute en permanence les deux queues et insère chaque message reçu dans la base centrale \texttt{ho\_db}, tout en acquittant le message.
+\end{enumerate}
+
+\subsection{Schéma d'architecture}
+
+\begin{verbatim}
++------------------+      +----------------------+      +----------------+
+|  BO1 (bo1_db)    |----> |  Queue : bo1.sync     |----> |                |
+|  MySQL :3308     |      |  RabbitMQ (Docker)    |      |  HO (ho_db)    |
++------------------+      |  localhost:5672        |      |  MySQL :3308   |
+|  BO2 (bo2_db)    |----> |  Queue : bo2.sync     |----> |                |
+|  MySQL :3308     |      +----------------------+      +----------------+
++------------------+
+    Producers                   RabbitMQ                   Consumer (HO)
+\end{verbatim}
+
+\subsection{Structure du projet}
+
+Le projet Maven est organisé comme suit :
+
+\begin{verbatim}
+tp2/
+├── mysql queries/
+│   ├── create-db.sql
+│   └── insert-db.sql
+├── pom.xml
+├── sql/
+│   ├── init_bo1.sql
+│   ├── init_bo2.sql
+│   └── init_ho.sql
+└── src/main/java/com/dbsync/
+    ├── model/
+    │   └── SaleRecord.java
+    ├── producer/
+    │   └── BOProducer.java
+    └── consumer/
+        └── HOConsumer.java
+\end{verbatim}
+
+\begin{itemize}
+    \item \texttt{SaleRecord.java} : modèle de données représentant une ligne de vente, sérialisé en JSON pour le transit dans RabbitMQ.
+    \item \texttt{BOProducer.java} : lit les ventes non synchronisées d'une base BO, les envoie dans la queue correspondante, puis met à jour le flag \texttt{synced = 1}.
+    \item \texttt{HOConsumer.java} : consomme les deux queues, insère les enregistrements dans \texttt{ho\_db} avec la source d'origine (BO1 ou BO2), et acquitte chaque message.
+\end{itemize}
+
+% ============================================================
+\section{Mise en place de l'environnement}
+% ============================================================
+
+\subsection{Lancement de RabbitMQ avec Docker}
+
+RabbitMQ est déployé via Docker avec l'image officielle incluant le plugin de management :
+
+\begin{lstlisting}[language=bash, caption={Démarrage du container RabbitMQ}]
+docker run -d \
+  --name rabbitmq \
+  -p 5672:5672 \
+  -p 15672:15672 \
+  -e RABBITMQ_DEFAULT_USER=admin \
+  -e RABBITMQ_DEFAULT_PASS=admin \
+  rabbitmq:3-management
+\end{lstlisting}
+
+L'interface de management est accessible à \url{http://localhost:15672} avec les identifiants \texttt{admin / admin}. Les queues \texttt{bo1.sync} et \texttt{bo2.sync} sont créées automatiquement lors du premier lancement des producers.
+
+\subsection{Initialisation des bases de données MySQL}
+
+Trois bases de données sont créées sur le port MySQL 3308 (utilisateur \texttt{root}, mot de passe vide) : \texttt{bo1\_db}, \texttt{bo2\_db} et \texttt{ho\_db}. Chacune contient une table \texttt{product\_sales}.
+
+Le schéma de la table est identique pour les trois bases, à l'exception de \texttt{ho\_db} qui ajoute les colonnes \texttt{source} et \texttt{original\_id} pour tracer l'origine de chaque enregistrement. Le champ \texttt{synced} dans les tables BO permet de marquer les enregistrements déjà transmis.
+
+\begin{lstlisting}[style=sql, caption={Structure de la table product\_sales dans les BOs}]
+CREATE TABLE product_sales (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    sale_date DATE,
+    region VARCHAR(50),
+    product VARCHAR(100),
+    qty INT,
+    cost DECIMAL(10,2),
+    amt DECIMAL(10,2),
+    tax DECIMAL(10,2),
+    total DECIMAL(10,2),
+    synced BOOLEAN DEFAULT FALSE
+);
+\end{lstlisting}
+
+\subsection{Configuration du projet Java}
+
+Les paramètres de connexion sont définis directement dans les classes Java. Le tableau suivant résume les valeurs par défaut :
+
+\begin{center}
+\begin{tabular}{|l|l|l|}
+\hline
+\textbf{Variable} & \textbf{Valeur par défaut} & \textbf{Composant} \\
+\hline
+\texttt{RABBITMQ\_HOST} & \texttt{localhost} & Producer / Consumer \\
+\texttt{RABBITMQ\_USER} & \texttt{admin} & Producer / Consumer \\
+\texttt{RABBITMQ\_PASS} & \texttt{admin} & Producer / Consumer \\
+\texttt{DB\_USER} & \texttt{root} & Producer / Consumer \\
+\texttt{DB\_PASS} & vide & Producer / Consumer \\
+Port MySQL & \texttt{3308} & URL JDBC \\
+\hline
+\end{tabular}
+\end{center}
+
+% ============================================================
+\section{Exécution et résultats}
+% ============================================================
+
+\subsection{Compilation du projet}
+
+Le projet est compilé avec Maven :
+
+\begin{lstlisting}[language=bash, caption={Compilation avec Maven}]
+cd tp2
+mvn clean package -q
+\end{lstlisting}
+
+\subsection{Lancement du Consumer HO}
+
+Le consumer est démarré en premier afin d'être prêt à recevoir les messages dès leur publication. La commande suivante lance \texttt{HOConsumer} :
+
+\begin{lstlisting}[language=bash, caption={Lancement du consumer HO}]
+mvn exec:java -Dexec.mainClass="com.dbsync.consumer.HOConsumer"
+\end{lstlisting}
+
+La figure~\ref{fig:launch_ho} montre la sortie console confirmant que le consumer est bien démarré et écoute les deux queues.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{launch ho consumer.png}
+    \caption{Démarrage du Consumer HO — écoute des queues bo1.sync et bo2.sync}
+    \label{fig:launch_ho}
+\end{figure}
+
+Le consumer se connecte au broker, déclare les queues durables \texttt{bo1.sync} et \texttt{bo2.sync}, et se met en attente de messages. Les avertissements SLF4J indiquent simplement l'absence de librairie de logging configurée, ce qui n'affecte pas le fonctionnement.
+
+\subsection{Synchronisation de BO1}
+
+Le producer BO1 est lancé en lui passant le nom de l'agence et le nom de la base de données en arguments :
+
+\begin{lstlisting}[language=bash, caption={Lancement du producer BO1}]
+mvn exec:java \
+  -Dexec.mainClass="com.dbsync.producer.BOProducer" \
+  -Dexec.args="BO1 bo1_db"
+\end{lstlisting}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{launch prod BO1.png}
+    \caption{Sortie du Producer BO1 — envoi de 3 enregistrements vers la queue bo1.sync}
+    \label{fig:launch_bo1}
+\end{figure}
+
+Comme illustré à la figure~\ref{fig:launch_bo1}, le producer détecte 3 enregistrements non synchronisés dans \texttt{bo1\_db} et les publie dans la queue \texttt{bo1.sync}. Chaque message est confirmé par un log \textit{Envoyé}.
+
+\subsubsection{Vérification du flag synced dans BO1}
+
+Après la publication, le producer met à jour le champ \texttt{synced} à \texttt{1} pour tous les enregistrements traités. La figure~\ref{fig:bo1_synced} confirme que les trois lignes de \texttt{bo1\_db} ont bien leur flag \texttt{synced = 1}.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{sync set to true in bo1_db.png}
+    \caption{Base bo1\_db après synchronisation — champ synced = 1 pour toutes les lignes}
+    \label{fig:bo1_synced}
+\end{figure}
+
+\subsection{Réception des messages BO1 par le Consumer HO}
+
+En parallèle, le terminal du consumer HO affiche les insertions au fur et à mesure de leur réception.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{sync from ho consumer.png}
+    \caption{Consumer HO — réception et insertion des données BO1 dans ho\_db}
+    \label{fig:ho_consumer_bo1}
+\end{figure}
+
+La figure~\ref{fig:ho_consumer_bo1} montre que les trois ventes de BO1 (East, Paper/Pens) ont été correctement insérées dans \texttt{ho\_db}. Chaque message est acquitté après insertion réussie.
+
+\subsection{Vérification des queues dans RabbitMQ}
+
+Après l'envoi par BO1 et avant le lancement de BO2, il est possible d'observer l'état des queues dans l'interface RabbitMQ Management.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{queues for B01.png}
+    \caption{Interface RabbitMQ — état des queues après synchronisation BO1}
+    \label{fig:queues_bo1}
+\end{figure}
+
+La figure~\ref{fig:queues_bo1} illustre que la queue \texttt{bo1.sync} contient 3 messages prêts (\textit{Ready = 3}), confirmant que les messages ont bien été publiés. La queue \texttt{bo2.sync} est vide à ce stade.
+
+\subsection{Synchronisation de BO2}
+
+Le producer BO2 est lancé de la même manière :
+
+\begin{lstlisting}[language=bash, caption={Lancement du producer BO2}]
+mvn exec:java \
+  -Dexec.mainClass="com.dbsync.producer.BOProducer" \
+  -Dexec.args="BO2 bo2_db"
+\end{lstlisting}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{sync from bo2 to ho.png}
+    \caption{Producer BO2 — envoi de 3 enregistrements (West) vers la queue bo2.sync}
+    \label{fig:launch_bo2}
+\end{figure}
+
+Comme le montre la figure~\ref{fig:launch_bo2}, les 3 ventes de la région West (BO2) sont publiées avec succès.
+
+\subsubsection{Vérification de BO2 après mise à jour}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{bo2 updated .png}
+    \caption{Base bo2\_db — données insérées avec synced = 1}
+    \label{fig:bo2_updated}
+\end{figure}
+
+La figure~\ref{fig:bo2_updated} confirme que les enregistrements de \texttt{bo2\_db} ont été marqués comme synchronisés.
+
+\subsection{Réception des messages BO1 et BO2 dans HO}
+
+Le consumer HO reçoit et traite successivement les messages des deux queues.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{sync in ho from bo2 logs.png}
+    \caption{Consumer HO — insertions combinées BO1 et BO2 dans ho\_db}
+    \label{fig:ho_all}
+\end{figure}
+
+La figure~\ref{fig:ho_all} montre les 6 insertions dans \texttt{ho\_db} : 3 provenant de BO1 (East) et 3 de BO2 (West), chacune avec la mention de la source dans le message.
+
+\subsection{État final de la base HO}
+
+\subsubsection{Données BO1 dans ho\_db}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{db sync for BO1 in product_sales in ho_db.png}
+    \caption{Table product\_sales dans ho\_db — enregistrements issus de BO1}
+    \label{fig:ho_bo1_data}
+\end{figure}
+
+\subsubsection{Données complètes (BO1 + BO2) dans ho\_db}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{final ho db content sync data.png}
+    \caption{État final de ho\_db — 6 enregistrements consolidés (3 BO1 + 3 BO2)}
+    \label{fig:ho_final}
+\end{figure}
+
+La figure~\ref{fig:ho_final} présente l'état final de la table \texttt{product\_sales} dans \texttt{ho\_db}. On y retrouve bien les 6 lignes attendues, avec les colonnes \texttt{source} et \texttt{original\_id} permettant de tracer l'origine de chaque vente.
+
+Le tableau ci-dessous récapitule les données consolidées :
+
+\begin{center}
+\small
+\begin{tabular}{|c|c|c|c|c|c|c|c|c|c|}
+\hline
+\textbf{id} & \textbf{source} & \textbf{orig\_id} & \textbf{date} & \textbf{region} & \textbf{product} & \textbf{qty} & \textbf{amt} & \textbf{tax} & \textbf{total} \\
+\hline
+13 & BO1 & 9 & 2024-04-03 & East & Paper & 21 & 271.95 & 19.04 & 290.99 \\
+14 & BO1 & 8 & 2024-04-02 & East & Pens & 14 & 30.66 & 2.15 & 32.81 \\
+15 & BO1 & 7 & 2024-04-01 & East & Paper & 73 & 945.35 & 66.17 & 1011.52 \\
+16 & BO2 & 1 & 2024-04-01 & West & Paper & 33 & 427.35 & 29.91 & 457.26 \\
+17 & BO2 & 2 & 2024-04-02 & West & Pens & 40 & 87.60 & 6.13 & 93.73 \\
+18 & BO2 & 3 & 2024-04-03 & West & Paper & 10 & 129.50 & 9.07 & 138.57 \\
+\hline
+\end{tabular}
+\captionof{table}{Données consolidées dans ho\_db après synchronisation complète}
+\end{center}
+
+% ============================================================
+\section{Test de résilience}
+% ============================================================
+
+\subsection{Principe}
+
+Un des avantages majeurs de l'architecture orientée messages est sa \textbf{résilience face aux pannes}. Ce scénario consiste à vérifier que les messages publiés pendant l'indisponibilité du consumer ne sont pas perdus.
+
+\subsection{Procédure}
+
+\begin{enumerate}
+    \item Arrêter le consumer HO (\texttt{CTRL+C}).
+    \item Insérer un nouvel enregistrement dans \texttt{bo1\_db} et lancer le producer BO1.
+    \item Vérifier dans l'interface RabbitMQ que le message s'accumule dans la queue.
+    \item Relancer le consumer HO et constater qu'il traite automatiquement les messages en attente.
+\end{enumerate}
+
+\begin{lstlisting}[style=sql, caption={Insertion d'un enregistrement de test pour le scénario de résilience}]
+USE bo1_db;
+INSERT INTO product_sales 
+  (sale_date, region, product, qty, cost, amt, tax, total)
+VALUES 
+  ('2024-04-04', 'East', 'Pencils', 50, 1.50, 75.00, 5.25, 80.25);
+\end{lstlisting}
+
+\subsection{Analyse}
+
+Grâce aux \textbf{queues durables} (\textit{durable = true}) et aux \textbf{messages persistants} (\textit{deliveryMode = 2}), RabbitMQ persiste les messages sur disque. Ainsi, même si le broker redémarre ou si le consumer est temporairement indisponible, aucune donnée n'est perdue. Dès que le consumer HO est relancé, il consomme immédiatement les messages en attente dans la queue.
+
+Ce mécanisme est particulièrement adapté aux environnements de production où la connectivité réseau entre agences et siège peut être intermittente.
+
+% ============================================================
+\section{Procédures de réinitialisation}
+% ============================================================
+
+Pour rejouer les tests depuis un état propre, il est possible de réinitialiser les flags de synchronisation et de vider la table HO :
+
+\begin{lstlisting}[style=sql, caption={Réinitialisation pour nouveaux tests}]
+-- Remettre tous les enregistrements comme non synchronisés
+USE bo1_db;
+UPDATE product_sales SET synced = FALSE;
+
+USE bo2_db;
+UPDATE product_sales SET synced = FALSE;
+
+-- Vider la table HO pour repartir de zéro
+USE ho_db;
+TRUNCATE TABLE product_sales;
+\end{lstlisting}
+
+% ============================================================
+\section{Conclusion}
+% ============================================================
+
+Ce TP a permis de mettre en pratique les concepts fondamentaux des systèmes répartis à travers l'implémentation d'un pipeline de synchronisation de données distribué. Les principaux enseignements sont les suivants :
+
+\begin{itemize}
+    \item \textbf{Découplage producteur/consommateur} : les BOs publient leurs données indépendamment du fait que le HO soit disponible ou non, grâce à l'intermédiation de RabbitMQ.
+    \item \textbf{Persistance et durabilité} : la configuration des queues durables et des messages persistants garantit qu'aucune donnée n'est perdue en cas de panne.
+    \item \textbf{Traçabilité} : les colonnes \texttt{source} et \texttt{original\_id} dans \texttt{ho\_db} permettent de retracer l'origine exacte de chaque enregistrement consolidé.
+    \item \textbf{Scalabilité} : l'architecture est facilement extensible ; l'ajout d'une nouvelle agence (BO3, etc.) ne nécessite que la création d'une nouvelle queue et d'un nouveau producer, sans modifier le consumer existant.
+    \item \textbf{Acquittement explicite} : l'utilisation de l'acquittement manuel (\texttt{basicAck}) dans le consumer garantit qu'un message n'est retiré de la queue que si son insertion dans \texttt{ho\_db} a réussi, évitant ainsi toute perte silencieuse.
+\end{itemize}
+
+L'ensemble du système fonctionne conformément aux attentes : les 6 enregistrements issus des deux agences ont été correctement consolidés dans la base centrale, les flags de synchronisation ont été mis à jour, et le test de résilience a confirmé la robustesse du mécanisme face aux interruptions de service.
+
+\end{document}
